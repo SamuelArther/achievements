@@ -9,6 +9,9 @@
 
 import { SITE_HTML } from './site.js';
 
+// Bump when a normaliser changes shape, so stale edge-cached payloads are dropped.
+const CACHE_VERSION = 'v4';
+
 const COOKIE = 'ach_session';
 const SESSION_DAYS = 30;
 
@@ -84,6 +87,7 @@ async function issueSession(env) {
  * ------------------------------------------------------------------ */
 
 async function cachedJSON(origin, label, ttl, fetcher) {
+  label = CACHE_VERSION + ':' + label;
   const digest = bytesToHex(await crypto.subtle.digest('SHA-256', enc.encode(label))).slice(0, 32);
   const key = new Request(origin + '/__cache/' + digest, { method: 'GET' });
   const cache = caches.default;
@@ -256,7 +260,7 @@ async function xboxLibrary(env, origin) {
   // Both endpoints return titles, in the same shape. /achievements/ carries the
   // per-title progress and titleHistory tends to reach further back, so merge
   // them and keep whichever entry for a title actually has progress attached.
-  const data = await cachedJSON(origin, 'xbl:lib:v3', 600, async () => {
+  const data = await cachedJSON(origin, 'xbl:lib', 600, async () => {
     const headers = xblHeaders(env);
     const merged = new Map();
 
@@ -388,7 +392,7 @@ function normaliseXblAchievement(a, titleId) {
 async function xboxAchievements(env, origin, titleId) {
   if (!env.XBL_API_KEY) throw new Error('Xbox is not configured.');
 
-  return cachedJSON(origin, 'xbl:ach:v2:' + titleId, 300, async () => {
+  return cachedJSON(origin, 'xbl:ach:' + titleId, 300, async () => {
     let collected = await xblCollect(env, (token) => token
       ? XBL + '/achievements/title/' + titleId + '/' + encodeURIComponent(token)
       : XBL + '/achievements/title/' + titleId);
@@ -549,6 +553,7 @@ async function diagnose(env, url) {
       count: list.length,
       earned: list.filter((a) => a.earned).length,
       withIcon: list.filter((a) => a.icon).length,
+      partial: detail.partial === true,
       note: detail.note || null,
       error: detail.error || null,
     });
