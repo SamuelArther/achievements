@@ -226,6 +226,20 @@ async function steamAchievements(env, origin, appid) {
 const XBL = 'https://xbl.io/api/v2';
 const xblHeaders = (env) => ({ 'x-authorization': env.XBL_API_KEY, accept: 'application/json' });
 
+/**
+ * OpenXBL wraps payloads in { content, code }. Some endpoints and older
+ * responses are bare, so unwrap only when the envelope is actually there.
+ */
+function xblBody(body) {
+  return body && body.content ? body.content : body;
+}
+
+function xblTitles(body) {
+  const payload = xblBody(body);
+  const list = payload && (payload.titles || payload.achievements);
+  return Array.isArray(list) ? list : [];
+}
+
 function xblImage(entry) {
   if (!entry) return null;
   if (Array.isArray(entry.displayImage)) return entry.displayImage[0] || null;
@@ -239,22 +253,27 @@ function xblImage(entry) {
 async function xboxLibrary(env, origin) {
   if (!env.XBL_API_KEY) return { games: [], warning: null };
 
-  // titleHistory is the canonical "games this account has played" list.
-  // /achievements/ returns recent unlocks, which is legitimately an empty array
-  // on a quiet account -- so falling through only on a *failed* request stops at
-  // an empty-but-successful response and reports no games at all.
-  const data = await cachedJSON(origin, 'xbl:lib:v2', 600, async () => {
+  // Both endpoints return titles, in the same shape. /achievements/ carries the
+  // per-title progress and titleHistory tends to reach further back, so merge
+  // them and keep whichever entry for a title actually has progress attached.
+  const data = await cachedJSON(origin, 'xbl:lib:v3', 600, async () => {
     const headers = xblHeaders(env);
-    for (const url of [XBL + '/player/titleHistory', XBL + '/achievements/']) {
-      const body = await getJSON(url, { headers });
-      const found = body && (body.titles || body.achievements);
-      if (Array.isArray(found) && found.length) return body;
+    const merged = new Map();
+
+    for (const url of [XBL + '/achievements/', XBL + '/player/titleHistory']) {
+      for (const title of xblTitles(await getJSON(url, { headers }))) {
+        const id = String(title.titleId || title.id || '');
+        if (!id) continue;
+        const seen = merged.get(id);
+        if (!seen || (!seen.achievement && title.achievement)) merged.set(id, title);
+      }
     }
-    return null;
+
+    return { titles: Array.from(merged.values()) };
   });
 
-  const titles = (data && (data.titles || data.achievements)) || [];
-  if (!Array.isArray(titles) || !titles.length) {
+  const titles = (data && data.titles) || [];
+  if (!titles.length) {
     return {
       games: [],
       warning: 'Xbox returned no titles from either titleHistory or achievements. ' +
@@ -317,11 +336,11 @@ async function xboxAchievements(env, origin, titleId) {
       const url = token
         ? XBL + '/achievements/title/' + titleId + '/' + encodeURIComponent(token)
         : XBL + '/achievements/title/' + titleId;
-      const body = await getJSON(url, { headers: xblHeaders(env) });
-      const batch = (body && (body.achievements || body.titles)) || [];
+      const payload = xblBody(await getJSON(url, { headers: xblHeaders(env) }));
+      const batch = (payload && payload.achievements) || [];
       if (!Array.isArray(batch) || !batch.length) break;
       collected = collected.concat(batch);
-      token = (body.pagingInfo && body.pagingInfo.continuationToken) || null;
+      token = (payload.pagingInfo && payload.pagingInfo.continuationToken) || null;
       if (!token) break;
     }
 
@@ -435,6 +454,37 @@ async function diagnose(env, url) {
     out.xbox.push(await probe('account', XBL + '/account', env, { headers }));
     out.xbox.push(await probe('achievements', XBL + '/achievements/', env, { headers }));
     out.xbox.push(await probe('titleHistory', XBL + '/player/titleHistory', env, { headers }));
+  }
+
+  // Run the real normalisers, so a fix can be confirmed end to end from here
+  // rather than by asking someone to reload the page and describe what they see.
+  const [steamLib, xboxLib] = await Promise.all([
+    steamLibrary(env, url.origin).catch((e) => ({ games: [], warning: String(e.message || e) })),
+    xboxLibrary(env, url.origin).catch((e) => ({ games: [], warning: String(e.message || e) })),
+  ]);
+
+  out.normalised = {
+    steamGames: steamLib.games.length,
+    xboxGames: xboxLib.games.length,
+    warnings: [steamLib.warning, xboxLib.warning].filter(Boolean),
+    xboxSample: xboxLib.games.slice(0, 5).map((g) => ({
+      id: g.id, name: g.name, summary: g.summary, hasArt: !!g.art,
+    })),
+  };
+
+  // And the per-title path for the first Xbox game, which is the other shape
+  // that has never been seen against a real account.
+  const first = xboxLib.games[0];
+  if (first) {
+    const detail = await xboxAchievements(env, url.origin, first.id).catch((e) => ({ error: String(e.message || e) }));
+    const list = detail.achievements || [];
+    out.normalised.xboxFirstTitle = {
+      name: first.name,
+      count: list.length,
+      note: detail.note || null,
+      error: detail.error || null,
+      sample: list.slice(0, 3),
+    };
   }
 
   return out;
