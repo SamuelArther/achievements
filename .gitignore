@@ -1,0 +1,3 @@
+node_modules/
+# Generated from site/index.html by build.mjs at deploy time.
+worker/site.js

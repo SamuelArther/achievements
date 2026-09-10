@@ -1,0 +1,12 @@
+name = "achievements"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+# Binds achievements.sambonius.net straight to the Worker. Wrangler creates the
+# DNS record itself, because sambonius.net is on the same Cloudflare account.
+[[routes]]
+pattern = "achievements.sambonius.net"
+custom_domain = true
+
+# Secrets are NOT set here - they are encrypted Worker secrets. See README.md:
+#   SITE_PASSWORD, STEAM_API_KEY, STEAM_ID, XBL_API_KEY

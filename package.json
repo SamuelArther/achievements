@@ -1,0 +1,9 @@
+{
+  "name": "achievements",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node build.mjs && node -e \"import('./worker/index.js').then(function(){console.log('worker parses OK')})\""
+  }
+}

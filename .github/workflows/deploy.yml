@@ -1,0 +1,35 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'worker/**'
+      - 'build.mjs'
+      - 'wrangler.toml'
+      - 'package.json'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Inlines site/index.html into worker/site.js, then makes sure the Worker
+      # module actually parses. This runs before the deploy so a syntax error
+      # fails loudly rather than halfway through a publish.
+      - name: Build and check
+        run: npm run check
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
