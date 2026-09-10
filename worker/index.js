@@ -177,10 +177,14 @@ async function steamAchievements(env, origin, appid) {
       schema.game.availableGameStats.achievements;
     for (const a of schemaList || []) meta[a.name] = a;
 
+    // Steam sends percent as a string ("49.8"), so coerce rather than trust the type.
     const rarity = {};
     const globalList = global && global.achievementpercentages &&
       global.achievementpercentages.achievements;
-    for (const a of globalList || []) rarity[a.name] = a.percent;
+    for (const a of globalList || []) {
+      const p = Number(a.percent);
+      if (Number.isFinite(p)) rarity[a.name] = p;
+    }
 
     return {
       achievements: list.map((a) => {
@@ -194,7 +198,7 @@ async function steamAchievements(env, origin, appid) {
           earned,
           unlockedAt: earned && a.unlocktime ? a.unlocktime * 1000 : null,
           points: null, // Steam has no gamerscore equivalent
-          rarity: typeof rarity[a.apiname] === 'number' ? rarity[a.apiname] : null,
+          rarity: a.apiname in rarity ? rarity[a.apiname] : null,
           secret: m.hidden === 1,
         };
       }),
@@ -313,6 +317,8 @@ async function xboxAchievements(env, origin, titleId) {
       achievements: collected.map((a) => {
         const earned = xblEarned(a);
         const unlocked = (a.progression && a.progression.timeUnlocked) || a.timeUnlocked;
+        // Xbox Live sends this as a string too, same as Steam.
+        const rare = a.rarity ? Number(a.rarity.currentPercentage) : NaN;
         return {
           id: String(a.id != null ? a.id : a.name),
           name: a.name || 'Unknown achievement',
@@ -321,9 +327,7 @@ async function xboxAchievements(env, origin, titleId) {
           earned,
           unlockedAt: earned && unlocked ? Date.parse(unlocked) || null : null,
           points: xblPoints(a),
-          rarity: a.rarity && typeof a.rarity.currentPercentage !== 'undefined'
-            ? Number(a.rarity.currentPercentage)
-            : null,
+          rarity: Number.isFinite(rare) ? rare : null,
           secret: a.isSecret === true,
         };
       }),
@@ -406,6 +410,11 @@ export default {
         },
       });
     }
+
+    // Cached upstream payloads are stored under this prefix on our own hostname.
+    // Requests reach the Worker before the edge cache is consulted, so these are
+    // not actually reachable — but refuse them outright rather than rely on that.
+    if (url.pathname.startsWith('/__cache/')) return json({ error: 'Not found.' }, 404);
 
     const authed = await isAuthed(request, env);
 
