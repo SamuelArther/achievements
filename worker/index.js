@@ -239,15 +239,27 @@ function xblImage(entry) {
 async function xboxLibrary(env, origin) {
   if (!env.XBL_API_KEY) return { games: [], warning: null };
 
-  const data = await cachedJSON(origin, 'xbl:lib', 600, async () =>
-    // The achievements endpoint carries per-title progress; titleHistory is the
-    // fallback when the account returns nothing there.
-    (await getJSON(XBL + '/achievements/', { headers: xblHeaders(env) })) ||
-    (await getJSON(XBL + '/player/titleHistory', { headers: xblHeaders(env) })));
+  // titleHistory is the canonical "games this account has played" list.
+  // /achievements/ returns recent unlocks, which is legitimately an empty array
+  // on a quiet account -- so falling through only on a *failed* request stops at
+  // an empty-but-successful response and reports no games at all.
+  const data = await cachedJSON(origin, 'xbl:lib:v2', 600, async () => {
+    const headers = xblHeaders(env);
+    for (const url of [XBL + '/player/titleHistory', XBL + '/achievements/']) {
+      const body = await getJSON(url, { headers });
+      const found = body && (body.titles || body.achievements);
+      if (Array.isArray(found) && found.length) return body;
+    }
+    return null;
+  });
 
   const titles = (data && (data.titles || data.achievements)) || [];
   if (!Array.isArray(titles) || !titles.length) {
-    return { games: [], warning: 'Xbox returned no titles. Check the OpenXBL key at xbl.io.' };
+    return {
+      games: [],
+      warning: 'Xbox returned no titles from either titleHistory or achievements. ' +
+        'Open /api/diag to see the raw status of each call.',
+    };
   }
 
   return {
