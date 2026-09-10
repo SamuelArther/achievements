@@ -297,7 +297,10 @@ async function xboxLibrary(env, origin) {
         // without opening every game.
         summary: {
           earned: prog.currentAchievements != null ? prog.currentAchievements : null,
-          total: prog.totalAchievements != null ? prog.totalAchievements : null,
+          // Xbox reports totalAchievements as 0 for most titles even when the
+          // earned count is right, so treat 0 as "unknown" and let the gamerscore
+          // totals carry the progress instead.
+          total: prog.totalAchievements || null,
           points: prog.currentGamerscore != null ? prog.currentGamerscore : null,
           totalPoints: prog.totalGamerscore != null ? prog.totalGamerscore : null,
         },

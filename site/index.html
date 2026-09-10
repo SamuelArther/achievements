@@ -577,6 +577,24 @@ function rarityClass(p) {
 
 function pct(n, d) { return d ? Math.round((n / d) * 100) : 0; }
 
+// Xbox reports totalAchievements as 0 on most titles, so fall back to the
+// gamerscore totals, which it does report accurately.
+function progressOf(g) {
+  var s = g.summary;
+  if (!s) return null;
+  if (s.total) {
+    return { percent: pct(s.earned, s.total), label: s.earned + ' / ' + s.total };
+  }
+  if (s.totalPoints) {
+    return {
+      percent: pct(s.points || 0, s.totalPoints),
+      label: (s.points || 0).toLocaleString() + ' / ' + s.totalPoints.toLocaleString() + ' G'
+    };
+  }
+  if (s.earned) return { percent: null, label: s.earned + ' unlocked' };
+  return null;
+}
+
 /* ---------------- Sign in ---------------- */
 
 function showGate(message) {
@@ -658,9 +676,10 @@ function visibleGames() {
     played: function (a, b) { return (b.minutesPlayed || 0) - (a.minutesPlayed || 0); },
     recent: function (a, b) { return (b.lastPlayed || 0) - (a.lastPlayed || 0); },
     progress: function (a, b) {
-      var pa = a.summary && a.summary.total ? a.summary.earned / a.summary.total : -1;
-      var pb = b.summary && b.summary.total ? b.summary.earned / b.summary.total : -1;
-      return pb - pa;
+      var pa = progressOf(a);
+      var pb = progressOf(b);
+      return (pb && pb.percent !== null ? pb.percent : -1) -
+             (pa && pa.percent !== null ? pa.percent : -1);
     }
   };
 
@@ -715,10 +734,13 @@ function renderGames() {
     else if (g.lastPlayed) sub.push(esc(when(g.lastPlayed)));
 
     var bar = '';
-    if (g.summary && g.summary.total) {
-      var p = pct(g.summary.earned, g.summary.total);
-      sub.push(g.summary.earned + '/' + g.summary.total);
-      bar = '<div class="mini-bar' + (p === 100 ? ' done' : '') + '"><i style="width:' + p + '%"></i></div>';
+    var prog = progressOf(g);
+    if (prog) {
+      sub.push(prog.label);
+      if (prog.percent !== null) {
+        bar = '<div class="mini-bar' + (prog.percent === 100 ? ' done' : '') + '">' +
+          '<i style="width:' + prog.percent + '%"></i></div>';
+      }
     }
 
     return '<button class="game" data-key="' + esc(key) + '"' +
