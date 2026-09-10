@@ -327,52 +327,87 @@ function xblIcon(a) {
   return (asset && asset.url) || null;
 }
 
+/** The account's own XUID, needed by the Xbox 360 endpoints. Cached for a day. */
+async function xboxXuid(env, origin) {
+  const cached = await cachedJSON(origin, 'xbl:xuid', 86400, async () => {
+    const body = xblBody(await getJSON(XBL + '/account', { headers: xblHeaders(env) }));
+    const user = body && Array.isArray(body.profileUsers) ? body.profileUsers[0] : null;
+    return { xuid: user && user.id ? String(user.id) : null };
+  });
+  return cached.xuid;
+}
+
+/** Walks the continuation tokens on whichever achievements endpoint is given. */
+async function xblCollect(env, buildUrl) {
+  let collected = [];
+  let token = null;
+
+  for (let page = 0; page < 10; page++) {
+    const payload = xblBody(await getJSON(buildUrl(token), { headers: xblHeaders(env) }));
+    const batch = (payload && payload.achievements) || [];
+    if (!Array.isArray(batch) || !batch.length) break;
+    collected = collected.concat(batch);
+    token = (payload.pagingInfo && payload.pagingInfo.continuationToken) || null;
+    if (!token) break;
+  }
+
+  return collected;
+}
+
+/**
+ * Xbox 360 achievements carry an imageId rather than mediaAssets. The legacy
+ * art host keys off the hex forms of the title and image ids; it can 404 for
+ * older titles, in which case the page just shows an empty tile.
+ */
+function x360Icon(a, titleId) {
+  if (a.imageId == null) return null;
+  const hex = (n) => (Number(n) >>> 0).toString(16);
+  return 'https://image-ssl.xboxlive.com/global/t.' + hex(titleId) + '/ach/0/' + hex(a.imageId);
+}
+
+function normaliseXblAchievement(a, titleId) {
+  const earned = xblEarned(a);
+  const unlocked = (a.progression && a.progression.timeUnlocked) || a.timeUnlocked;
+  // Xbox Live sends this as a string too, same as Steam.
+  const rare = a.rarity ? Number(a.rarity.currentPercentage) : NaN;
+
+  return {
+    id: String(a.id != null ? a.id : a.name),
+    name: a.name || 'Unknown achievement',
+    description: (earned ? a.description : a.lockedDescription || a.description) || '',
+    icon: xblIcon(a) || x360Icon(a, titleId),
+    earned,
+    unlockedAt: earned && unlocked ? Date.parse(unlocked) || null : null,
+    points: xblPoints(a),
+    rarity: Number.isFinite(rare) ? rare : null,
+    secret: a.isSecret === true,
+  };
+}
+
 async function xboxAchievements(env, origin, titleId) {
   if (!env.XBL_API_KEY) throw new Error('Xbox is not configured.');
 
-  return cachedJSON(origin, 'xbl:ach:' + titleId, 300, async () => {
-    let collected = [];
-    let token = null;
+  return cachedJSON(origin, 'xbl:ach:v2:' + titleId, 300, async () => {
+    let collected = await xblCollect(env, (token) => token
+      ? XBL + '/achievements/title/' + titleId + '/' + encodeURIComponent(token)
+      : XBL + '/achievements/title/' + titleId);
 
-    // Titles with a lot of achievements come back paged.
-    for (let page = 0; page < 10; page++) {
-      const url = token
-        ? XBL + '/achievements/title/' + titleId + '/' + encodeURIComponent(token)
-        : XBL + '/achievements/title/' + titleId;
-      const payload = xblBody(await getJSON(url, { headers: xblHeaders(env) }));
-      const batch = (payload && payload.achievements) || [];
-      if (!Array.isArray(batch) || !batch.length) break;
-      collected = collected.concat(batch);
-      token = (payload.pagingInfo && payload.pagingInfo.continuationToken) || null;
-      if (!token) break;
+    // Xbox 360 titles are not served by the modern endpoint at all; they have
+    // their own, and it needs the XUID rather than working off the API key.
+    if (!collected.length) {
+      const xuid = await xboxXuid(env, origin);
+      if (xuid) {
+        collected = await xblCollect(env, (token) => XBL + '/achievements/x360/' + xuid +
+          '/title/' + titleId + (token ? '/' + encodeURIComponent(token) : ''));
+      }
     }
 
     if (!collected.length) {
-      return {
-        achievements: [],
-        note: 'No achievements came back for this title. Xbox 360 era titles often need the ' +
-          'console-specific endpoint, which requires your XUID.',
-      };
+      return { achievements: [], note: 'No achievements came back for this title, from either the current or the Xbox 360 endpoint.' };
     }
 
     return {
-      achievements: collected.map((a) => {
-        const earned = xblEarned(a);
-        const unlocked = (a.progression && a.progression.timeUnlocked) || a.timeUnlocked;
-        // Xbox Live sends this as a string too, same as Steam.
-        const rare = a.rarity ? Number(a.rarity.currentPercentage) : NaN;
-        return {
-          id: String(a.id != null ? a.id : a.name),
-          name: a.name || 'Unknown achievement',
-          description: (earned ? a.description : a.lockedDescription || a.description) || '',
-          icon: xblIcon(a),
-          earned,
-          unlockedAt: earned && unlocked ? Date.parse(unlocked) || null : null,
-          points: xblPoints(a),
-          rarity: Number.isFinite(rare) ? rare : null,
-          secret: a.isSecret === true,
-        };
-      }),
+      achievements: collected.map((a) => normaliseXblAchievement(a, titleId)),
       note: null,
     };
   });
@@ -475,19 +510,24 @@ async function diagnose(env, url) {
     })),
   };
 
-  // And the per-title path for the first Xbox game, which is the other shape
-  // that has never been seen against a real account.
-  const first = xboxLib.games[0];
-  if (first) {
-    const detail = await xboxAchievements(env, url.origin, first.id).catch((e) => ({ error: String(e.message || e) }));
+  // Sweep a handful of titles rather than one, so titles the modern endpoint
+  // does not serve (Xbox 360 era) show up and the fallback can be seen working.
+  const sweep = Number(url.searchParams.get('sweep') || 8);
+  out.normalised.xboxTitles = [];
+
+  for (const game of xboxLib.games.slice(0, sweep)) {
+    const detail = await xboxAchievements(env, url.origin, game.id)
+      .catch((e) => ({ error: String(e.message || e) }));
     const list = detail.achievements || [];
-    out.normalised.xboxFirstTitle = {
-      name: first.name,
+    out.normalised.xboxTitles.push({
+      name: game.name,
+      titleId: game.id,
       count: list.length,
+      earned: list.filter((a) => a.earned).length,
+      withIcon: list.filter((a) => a.icon).length,
       note: detail.note || null,
       error: detail.error || null,
-      sample: list.slice(0, 3),
-    };
+    });
   }
 
   return out;
