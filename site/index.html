@@ -256,6 +256,18 @@
 
   .empty { padding: 28px 16px; color: var(--dim); font-size: 13px; text-align: center; }
 
+  .warn {
+    margin: 8px 12px 0;
+    padding: 9px 11px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--gold);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
   /* ---------------- Detail ---------------- */
 
   #detail { overflow-y: auto; min-height: 0; }
@@ -498,6 +510,7 @@
           </select>
         </div>
       </div>
+      <div id="warnings"></div>
       <div id="games"><div class="spinner"></div></div>
     </aside>
 
@@ -622,6 +635,7 @@ function start() {
       state.games = data.games || [];
       state.warnings = data.warnings || [];
       renderTotals();
+      renderWarnings();
       renderGames();
     })
     .catch(function (e) {
@@ -667,6 +681,18 @@ function renderTotals() {
   if (gs) bits.push('<div class="stat"><b>' + gs.toLocaleString() + '</b><i>Gamerscore</i></div>');
 
   $('#totals').innerHTML = bits.join('');
+}
+
+// A platform can fail while the other still returns games, so these must show
+// whether or not the list is empty.
+function renderWarnings() {
+  if (!state.warnings.length) {
+    $('#warnings').innerHTML = '';
+    return;
+  }
+  $('#warnings').innerHTML = state.warnings.map(function (w) {
+    return '<div class="warn">' + esc(w) + '</div>';
+  }).join('');
 }
 
 function renderGames() {

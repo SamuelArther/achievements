@@ -169,7 +169,15 @@ async function steamAchievements(env, origin, appid) {
     const list = player && player.playerstats && player.playerstats.achievements;
     if (!Array.isArray(list) || !list.length) {
       const err = player && player.playerstats && player.playerstats.error;
-      return { achievements: [], note: err || 'This game reports no achievements.' };
+      // A null response means Steam refused the call outright rather than
+      // saying the game has no stats, which usually points at privacy.
+      return {
+        achievements: [],
+        note: err || (player
+          ? 'This game reports no achievements.'
+          : 'Steam refused this request. That is normal for a game with no achievements, ' +
+            'but if it happens for every game, check Profile → Privacy Settings → Game details → Public.'),
+      };
     }
 
     const meta = {};
@@ -337,6 +345,90 @@ async function xboxAchievements(env, origin, titleId) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Diagnostics
+ *
+ * The normal paths swallow upstream failures so one bad title cannot break
+ * the page. That is unhelpful when something is wrong account-wide, so this
+ * reports the raw status and a snippet for each call, with the keys stripped.
+ * ------------------------------------------------------------------ */
+
+function scrub(text, env) {
+  let out = String(text);
+  for (const secret of [env.STEAM_API_KEY, env.XBL_API_KEY, env.STEAM_ID]) {
+    if (secret) out = out.split(secret).join('<redacted>');
+  }
+  return out;
+}
+
+async function probe(label, url, env, init) {
+  try {
+    const res = await fetch(url, init);
+    const text = await res.text();
+    let keys = null;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object') keys = Object.keys(parsed).slice(0, 12);
+    } catch { /* not JSON, the snippet will show what it was */ }
+    return {
+      call: label,
+      status: res.status,
+      topLevelKeys: keys,
+      snippet: scrub(text, env).slice(0, 400),
+    };
+  } catch (e) {
+    return { call: label, status: null, error: scrub(String(e.message || e), env) };
+  }
+}
+
+async function diagnose(env, url) {
+  const out = { steam: [], xbox: [] };
+
+  if (!env.STEAM_API_KEY || !env.STEAM_ID) {
+    out.steam.push({ call: 'config', error: 'STEAM_API_KEY or STEAM_ID missing.' });
+  } else {
+    const owned = STEAM + '/IPlayerService/GetOwnedGames/v1/?key=' + env.STEAM_API_KEY +
+      '&steamid=' + env.STEAM_ID + '&include_appinfo=true&include_played_free_games=true&format=json';
+    out.steam.push(await probe('GetOwnedGames', owned, env));
+
+    // Use the appid asked for, else pick one that claims to report stats.
+    let appid = url.searchParams.get('appid');
+    if (!appid) {
+      const lib = await getJSON(owned);
+      const games = (lib && lib.response && lib.response.games) || [];
+      const withStats = games.filter((g) => g.has_community_visible_stats);
+      const pick = withStats.sort((a, b) => (b.playtime_forever || 0) - (a.playtime_forever || 0))[0];
+      if (pick) appid = String(pick.appid);
+      out.steam.push({
+        call: 'appid selection',
+        ownedCount: games.length,
+        withVisibleStats: withStats.length,
+        chosen: appid ? appid + ' (' + (pick.name || '?') + ')' : 'none found',
+      });
+    }
+
+    if (appid) {
+      out.steam.push(await probe('GetPlayerAchievements appid=' + appid,
+        STEAM + '/ISteamUserStats/GetPlayerAchievements/v1/?key=' + env.STEAM_API_KEY +
+        '&steamid=' + env.STEAM_ID + '&appid=' + appid + '&l=english', env));
+      out.steam.push(await probe('GetSchemaForGame appid=' + appid,
+        STEAM + '/ISteamUserStats/GetSchemaForGame/v2/?key=' + env.STEAM_API_KEY +
+        '&appid=' + appid + '&l=english', env));
+    }
+  }
+
+  if (!env.XBL_API_KEY) {
+    out.xbox.push({ call: 'config', error: 'XBL_API_KEY missing.' });
+  } else {
+    const headers = xblHeaders(env);
+    out.xbox.push(await probe('account', XBL + '/account', env, { headers }));
+    out.xbox.push(await probe('achievements', XBL + '/achievements/', env, { headers }));
+    out.xbox.push(await probe('titleHistory', XBL + '/player/titleHistory', env, { headers }));
+  }
+
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
  * Router
  * ------------------------------------------------------------------ */
 
@@ -370,6 +462,8 @@ async function handleAPI(request, env, url) {
       return json({ error: String(e.message || e) }, 502);
     }
   }
+
+  if (url.pathname === '/api/diag') return json(await diagnose(env, url));
 
   // Raw upstream passthrough. Useful when a title comes back in a shape the
   // normalisers above have not seen yet.
