@@ -395,11 +395,13 @@ async function xboxAchievements(env, origin, titleId) {
 
     // Xbox 360 titles are not served by the modern endpoint at all; they have
     // their own, and it needs the XUID rather than working off the API key.
+    let fromX360 = false;
     if (!collected.length) {
       const xuid = await xboxXuid(env, origin);
       if (xuid) {
         collected = await xblCollect(env, (token) => XBL + '/achievements/x360/' + xuid +
           '/title/' + titleId + (token ? '/' + encodeURIComponent(token) : ''));
+        fromX360 = collected.length > 0;
       }
     }
 
@@ -409,7 +411,12 @@ async function xboxAchievements(env, origin, titleId) {
 
     return {
       achievements: collected.map((a) => normaliseXblAchievement(a, titleId)),
-      note: null,
+      // The Xbox 360 endpoint returns only what has been unlocked, so the list
+      // is not the full set and must not be presented as a completion figure.
+      partial: fromX360,
+      note: fromX360
+        ? 'Xbox only reports unlocked achievements for Xbox 360 titles, so the locked ones cannot be listed here.'
+        : null,
     };
   });
 }

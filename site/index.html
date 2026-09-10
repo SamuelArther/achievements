@@ -818,8 +818,9 @@ function select(key) {
       state.cache[key] = data;
 
       // Steam does not give per-game progress in the library call, so fold in
-      // what we just learned and let the sidebar show it from now on.
-      if (data.achievements && data.achievements.length) {
+      // what we just learned and let the sidebar show it from now on. Skipped
+      // for a partial list, which would otherwise read as 100% complete.
+      if (data.achievements && data.achievements.length && !data.partial) {
         var earned = data.achievements.filter(function (a) { return a.earned; }).length;
         game.summary = game.summary || {};
         game.summary.earned = earned;
@@ -844,7 +845,6 @@ function renderHero(game, data) {
   if (data && data.achievements && data.achievements.length) {
     var all = data.achievements;
     var earned = all.filter(function (a) { return a.earned; });
-    var p = pct(earned.length, all.length);
 
     var points = 0, totalPoints = 0;
     all.forEach(function (a) {
@@ -854,14 +854,28 @@ function renderHero(game, data) {
       }
     });
 
-    sub = '<div class="progress-row">' +
-      '<div class="bar' + (p === 100 ? ' done' : '') + '"><i style="width:' + p + '%"></i></div>' +
-      '<div class="stat"><b>' + earned.length + ' / ' + all.length + '</b><i>' + p + '% complete</i></div>' +
-      (totalPoints
-        ? '<div class="stat"><b>' + points.toLocaleString() + ' / ' + totalPoints.toLocaleString() +
-          '</b><i>Gamerscore</i></div>'
-        : '') +
-      '</div>';
+    if (data.partial) {
+      // Only the unlocked ones came back, so there is no honest denominator.
+      // The library summary still has real gamerscore totals, so use those.
+      var s = game.summary || {};
+      sub = '<div class="progress-row">' +
+        '<div class="stat"><b>' + earned.length + '</b><i>Unlocked</i></div>' +
+        (s.totalPoints
+          ? '<div class="stat"><b>' + (s.points || 0).toLocaleString() + ' / ' +
+            s.totalPoints.toLocaleString() + '</b><i>Gamerscore</i></div>'
+          : '<div class="stat"><b>' + points.toLocaleString() + '</b><i>Gamerscore</i></div>') +
+        '</div>';
+    } else {
+      var p = pct(earned.length, all.length);
+      sub = '<div class="progress-row">' +
+        '<div class="bar' + (p === 100 ? ' done' : '') + '"><i style="width:' + p + '%"></i></div>' +
+        '<div class="stat"><b>' + earned.length + ' / ' + all.length + '</b><i>' + p + '% complete</i></div>' +
+        (totalPoints
+          ? '<div class="stat"><b>' + points.toLocaleString() + ' / ' + totalPoints.toLocaleString() +
+            '</b><i>Gamerscore</i></div>'
+          : '') +
+        '</div>';
+    }
   }
 
   var played = hours(game.minutesPlayed);
@@ -887,10 +901,13 @@ function renderDetail(game, data) {
 
   var earnedCount = all.filter(function (a) { return a.earned; }).length;
 
+  // With a partial list every entry is unlocked, so the filters have nothing
+  // to divide and would only imply the locked ones are absent by choice.
   var toolbar = '<div class="toolbar">' +
-    '<button class="chip" data-filter="all" aria-pressed="' + (state.filter === 'all') + '">All ' + all.length + '</button>' +
-    '<button class="chip" data-filter="earned" aria-pressed="' + (state.filter === 'earned') + '">Unlocked ' + earnedCount + '</button>' +
-    '<button class="chip" data-filter="locked" aria-pressed="' + (state.filter === 'locked') + '">Locked ' + (all.length - earnedCount) + '</button>' +
+    (data.partial ? '<button class="chip" aria-pressed="true">' + earnedCount + ' unlocked</button>' :
+      '<button class="chip" data-filter="all" aria-pressed="' + (state.filter === 'all') + '">All ' + all.length + '</button>' +
+      '<button class="chip" data-filter="earned" aria-pressed="' + (state.filter === 'earned') + '">Unlocked ' + earnedCount + '</button>' +
+      '<button class="chip" data-filter="locked" aria-pressed="' + (state.filter === 'locked') + '">Locked ' + (all.length - earnedCount) + '</button>') +
     '<select id="ach-sort">' +
       '<option value="default"' + (state.achSort === 'default' ? ' selected' : '') + '>Unlocked first</option>' +
       '<option value="recent"' + (state.achSort === 'recent' ? ' selected' : '') + '>Most recent</option>' +
@@ -899,9 +916,10 @@ function renderDetail(game, data) {
     '</select>' +
     '</div>';
 
-  $('#detail').innerHTML = renderHero(game, data) + toolbar + '<div id="list"></div>';
+  var caveat = data.note ? '<div class="notice">' + esc(data.note) + '</div>' : '';
+  $('#detail').innerHTML = renderHero(game, data) + toolbar + caveat + '<div id="list"></div>';
 
-  $('#detail').querySelectorAll('.toolbar .chip').forEach(function (chip) {
+  $('#detail').querySelectorAll('.toolbar .chip[data-filter]').forEach(function (chip) {
     chip.addEventListener('click', function () {
       state.filter = chip.getAttribute('data-filter');
       renderDetail(game, data);
