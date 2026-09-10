@@ -304,6 +304,7 @@ async function xboxLibrary(env, origin) {
           points: prog.currentGamerscore != null ? prog.currentGamerscore : null,
           totalPoints: prog.totalGamerscore != null ? prog.totalGamerscore : null,
         },
+        devices: Array.isArray(t.devices) ? t.devices : [],
       };
     }),
     warning: null,
@@ -512,10 +513,26 @@ async function diagnose(env, url) {
 
   // Sweep a handful of titles rather than one, so titles the modern endpoint
   // does not serve (Xbox 360 era) show up and the fallback can be seen working.
+  const devices = {};
+  for (const game of xboxLib.games) {
+    for (const device of game.devices || []) devices[device] = (devices[device] || 0) + 1;
+  }
+  out.normalised.xboxDevices = devices;
+  out.normalised.x360Titles = xboxLib.games
+    .filter((g) => (g.devices || []).some((d) => /360/.test(d)))
+    .slice(0, 8)
+    .map((g) => ({ id: g.id, name: g.name }));
+
+  // Named ids win over the head of the list, so a specific title can be tested.
+  const named = (url.searchParams.get('titles') || '').split(',').filter(Boolean);
   const sweep = Number(url.searchParams.get('sweep') || 8);
+  const targets = named.length
+    ? named.map((id) => xboxLib.games.find((g) => g.id === id) || { id, name: '(not in library)', devices: [] })
+    : xboxLib.games.slice(0, sweep);
+
   out.normalised.xboxTitles = [];
 
-  for (const game of xboxLib.games.slice(0, sweep)) {
+  for (const game of targets) {
     const detail = await xboxAchievements(env, url.origin, game.id)
       .catch((e) => ({ error: String(e.message || e) }));
     const list = detail.achievements || [];
