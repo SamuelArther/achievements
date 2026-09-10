@@ -522,6 +522,14 @@ export default {
     // not actually reachable — but refuse them outright rather than rely on that.
     if (url.pathname.startsWith('/__cache/')) return json({ error: 'Not found.' }, 404);
 
+    // Temporary debugging hatch: /api/diag alone can be reached with a random
+    // token set as a Worker secret, so upstream shapes can be inspected without
+    // the site password. Delete the DIAG_TOKEN secret to close it again.
+    if (url.pathname === '/api/diag' && env.DIAG_TOKEN &&
+        safeEqual(url.searchParams.get('token') || '', env.DIAG_TOKEN)) {
+      return json(await diagnose(env, url));
+    }
+
     const authed = await isAuthed(request, env);
 
     if (url.pathname.startsWith('/api/')) {
